@@ -21,6 +21,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Init toolchain submodules
+        run: |
+          git submodule sync
+          # AvailabilityVersions supplies availability.pl for make_symbol_aliasing.sh.
+          git submodule update --init toolchain/AvailabilityVersions
+          ls -l toolchain/AvailabilityVersions/availability.pl
+
       - name: Deps / Xcode
         run: |
           brew install jq gum bash cmake ninja
