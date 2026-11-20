@@ -1,0 +1,68 @@
+name: xnu-xzs
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_going:
+        description: make -k (collect all compile errors in one run)
+        default: "false"
+  push:
+    branches: [main]
+
+concurrency:
+  group: xnu-zzs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # xnu-12377.1.9 (Darwin 24) / VMAPPLE needs Xcode 16's iig + SDK.
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps / Xcode
+        run: |
+          brew install jq gum bash cmake ninja
+          printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
+          sudo chmod +x /usr/local/bin/xcodes
+          sw_vers
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcrun --find iig
+
+      - name: Build XNU (VMAPPLE)
+        working-directory: src/xnu
+        env:
+          MAKEFLAGS: ${{ inputs.keep_going == 'true' && '-k' || '' }}
+        run: |
+          make \
+            KERNEL_CONFIGS=DEVELOPMENT \
+            ARCH_CONFIGS=ARM64 \
+            MACHINE_CONFIGS=VMAPPLE \
+            RC_DARWIN_KERNEL_VERSION=24.0.0 \
+            build -j$(sysctl -n hw.ncpu)
+
+      - name: PAC audit
+        if: always()
+        run: ./scripts/check-no-pac.sh src/xnu/BUILD/obj/DEVELOPMENT_ARM64_VMAPPLE/kernel.development.vmapple || true
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p out
+          cp -f src/xnu/BUILD/obj/DEVELOPMENT_ARM64_VMAPPLE/kernel.development.vmapple out/ 2>/dev/null || true
+          find src/xnu/BUILD/obj -maxdepth 2 -name 'kernel.*' -type f -exec cp -f {} out/ \; 2>/dev/null || true
+          ls -la out
+          (cd out && shasum -a 256 * > SHA256SUMS) || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xzs-kernel
+          path: out/
+          if-no-files-found: warn
+          retention-days: 14
